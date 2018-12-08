@@ -1,5 +1,8 @@
 /*
 Georden Grabuskie
+Anette Ulrichsen
+CPSC 474
+Project 2
 Based off mpi hello world code from Eclipse PTP.
  */
 #include <stdio.h>
@@ -7,18 +10,18 @@ Based off mpi hello world code from Eclipse PTP.
 #include "mpi.h"
 #include <stdlib.h>
 #include <time.h>
+
 void merge(int arr[], int l, int m, int r);
 void mergeSort(int arr[], int l, int r);
-void final_merge(int arr[], int subsize, int size);
+void final_merge(int arr[], int p, int size);
 void sort_extra(int arr[], int size, int p);
-void merge_extra(int arr[], int size, int p);
 
 int main(int argc, char* argv[]){
 	int  my_rank; /* rank of process */
 	int  p;       /* number of processes */
 	/* start up MPI */
 	
-	MPI_Init(&argc, &argv); //takes one argument which is the number of random elements to generate and sort
+	MPI_Init(&argc, &argv); //takes up to one argument which would be the number of random elements to generate and sort
 	
 	/* find out process rank */
 	MPI_Comm_rank(MPI_COMM_WORLD, &my_rank); 
@@ -26,110 +29,92 @@ int main(int argc, char* argv[]){
 	/* find out number of processes */
 	MPI_Comm_size(MPI_COMM_WORLD, &p); 
 	
-	int size = 66;
-	int subsize = (size / p);
-	printf("P: %d\nsubsize: %d\n", p, subsize);
+	int size = 64;
+	if(argc > 1) //for running from CLI
+	{
+		size = atoi(argv[1]);
+	}
+
+	int subsize = (size / p); //number of values to send to each process
+
 
 	int* main_array = NULL;
-	int* sub_array = malloc(sizeof(int) * subsize);
+	int* sub_array = malloc(sizeof(int) * subsize); //every process gets a subarray
 
-
+	int sort_start_time;
 	if (my_rank == 0) //only the root process needs to generate values
 	{
+		printf("Processes: %d\nSize: %d\nSubsize: %d\nRemainder: %d\n", p, size, subsize, size%p);//display once
+
 		main_array = malloc(sizeof(int) * size); //dynamic array for random ints
 		srand(time(NULL));
 		for (int i = 0; i < size; ++i)
 		{
-			main_array[i] = 9;
+			main_array[i] = (rand() % 10); //keeping it to single digits
 		}
-		main_array[size - 1] = 7;
-		main_array[size - 2] = 8;
-	}
+		printf("Initial array: ");
+		for (int i = 0; i < size; ++i)
+		{
+			printf("%d ", main_array[i]);
+		}
+		printf("\n");
+		sort_start_time = MPI_Wtime();
 
+
+	}
 
 
 	MPI_Scatter(main_array, subsize, MPI_INT, sub_array, subsize, MPI_INT, 0, MPI_COMM_WORLD); //now each process has its own piece of the main array
-	printf("Process %d before sort: ", my_rank);
-	for (int i = 0; i < subsize; ++i)
-	{
-		printf("%d ", sub_array[i]);
-	}
-	printf("\n");
 
-
-	mergeSort(sub_array, 0, subsize-1);
-
-	printf("Process %d after sort: ", my_rank);
-	for (int i = 0; i < subsize; ++i)
-	{
-		printf("%d ", sub_array[i]);
-	}
-	printf("\n");
-
-
-
-	//mergeSort(sub_array, 0, subsize -1); //sort each subarray
-
-	MPI_Gather(sub_array, subsize, MPI_INT, main_array, subsize, MPI_INT, 0, MPI_COMM_WORLD);
+	mergeSort(sub_array, 0, subsize-1); //every process sorts its own sub array
 
 	if(my_rank == 0)
 	{
-		printf("Process %d after gather:     ", my_rank);
-		for (int i = 0; i < size; ++i)
-		{
-			printf("%d ", main_array[i]);
-		}
-		printf("\n");
-		sort_extra(main_array, size, p);
-
-		final_merge(main_array, subsize, size);
-
-		printf("Process %d after last merge: ", my_rank);
-		for (int i = 0; i < size; ++i)
-		{
-			printf("%d ", main_array[i]);
-		}
-		printf("\n");
-
-
-		printf("Process %d after sort extra: ", my_rank);
-		for (int i = 0; i < size; ++i)
-		{
-			printf("%d ", main_array[i]);
-		}
-		printf("\n");
-
+		sort_extra(main_array, size, p); //The remaining values that didn't get scattered are sorted in place in the main array on root 0
 	}
 
+	MPI_Gather(sub_array, subsize, MPI_INT, main_array, subsize, MPI_INT, 0, MPI_COMM_WORLD); //the sorted sub arrays are gathered in pieces bak into the main array on process 0
+
+	if(my_rank == 0)
+	{
+
+		final_merge(main_array, p, size);
+		printf("Sorted array:  ");
+		for (int i = 0; i < size; ++i)
+		{
+			printf("%d ", main_array[i]);
+		}
+		printf("\nDuration: %f seconds", (MPI_Wtime() - sort_start_time));
+		free(main_array);
+	}				//Don't forget to free memory.
+	free(sub_array);
 
 
 	/* shut down MPI */
 	MPI_Finalize(); 
 	
 	
-	return 0;// Second subarray is arr[m+1..r]
+	return 0;
 
 }
 
-//Basic merge sort for integers taken from https://www.geeksforgeeks.org/merge-sort/
-// Merges two subarrays of arr[].
-// First subarray is arr[l..m]
-
-void sort_extra(int arr[], int size, int p) //sorts the extra values at the end of the array that are left over after scatter
+//sorts the extra values at the end of the array that are left over after scatter
+void sort_extra(int arr[], int size, int p)
 {
 	int remainder = size % p;
-	printf("remainder: %d", remainder);
 	if(remainder)
 	{
 		mergeSort(arr, (size - remainder), (size - 1));
 	}
 }
-void final_merge(int arr[], int init_subsize, int size) //merges the p sorted subarrays in place
+
+//merges the p sorted subarrays in place
+//Root process calls merge iteratively on the sorted blocks of the main array
+void final_merge(int arr[], int p, int size)
 {
-	int subsize = init_subsize;
+	int subsize = size / p;
 	int shift_size = (2 * subsize);
-	int left, middle, right, i = 0;
-	printf("Size: %d\nSubsize: %d\n", size, subsize);
+	int left, middle, right;
 	while (shift_size <= (size))
 	{
 		left = 0;
@@ -138,21 +123,24 @@ void final_merge(int arr[], int init_subsize, int size) //merges the p sorted su
 
 		while (right <= (size-1))
 		{
-			printf("%d entered loop\n", i++);
 			merge(arr, left, middle, right);
-			 left += shift_size;
-			 middle += shift_size;
+			left += shift_size;
+			middle += shift_size;
 			 right += shift_size;
 		}
 		subsize *= 2;
 		shift_size *= 2;
 
 	}
-	int remainder = (size % init_subsize);
-	printf("remainder: %d\n", remainder);
+	int remainder = (size % p);
 	merge(arr, 0, (size - remainder - 1), (size - 1) );
 	return;
 }
+
+//Basic merge sort for integers taken from https://www.geeksforgeeks.org/merge-sort/
+// Merges two subarrays of arr[].
+// First subarray is arr[l..m]
+// Second subarray is arr[m+1..r]
 void merge(int arr[], int l, int m, int r)
 {
     int i, j, k;
